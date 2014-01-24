@@ -9,19 +9,10 @@ QT       -= gui core
 TARGET = rcx8asm
 
 SOURCES += main.c \
-    parser.c \
-    generator.c \
-    assembler.c \
-    tokenparser.c \
-    token.c
+	stack.c
 
 HEADERS += \
-    parser.h \
-    generator.h \
-    assembler.h \
-    tokenparser.h \
-    token.h
-
+    stack.h
 
 
 
