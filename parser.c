@@ -3,9 +3,12 @@
 
 #define STACK_SIZE 50
 #define LINEBUF_SIZE 100
+#define NUM_SYMS 9
+#define NUM_CHARS 128
 
 static struct token tokens[20];
 static struct symbol symbols[100];
+static long handlers[NUM_SYMS]
 static int cur_token;
 static int num_symbols;
 
@@ -25,7 +28,9 @@ int pda_init(struct pda *pda, int q0, int Z, int fin)
 	return 0;
 }
 
-
+static int syntax_error(){
+	return -1;
+}
 
 static int add_to_token(char c)
 {
