@@ -4,9 +4,11 @@
 #include<stdlib.h>
 #include<inttypes.h>
 #include<stdarg.h>
+#include<errno.h>
 
 #include "list.h"
 #include "parser.h"
+#include "aux.h"
 
 #define IDENT_MAX 255
 #define COMMENT_BUFLEN 63
@@ -153,8 +155,8 @@ enum statement_type {
 
 struct instruction{
 	int id;
-	char p1; // 4 Bit parameter
-	char p2; // 8 Bit parameter
+	uint16_t p1; // 4 Bit parameter
+	uint16_t p2; // 8 Bit parameter
 	struct label * address;
 };
 
@@ -200,28 +202,8 @@ static int cur_tok = 0;
 static int cur_line = 0;
 static struct program prg;
 
-static uint16_t current_address;
-struct segment * current_segment;
-
-const char * strupr(const char * c){
-	char * s = (char*) c;
-
-	while(*s){
-		*s = toupper(*s);
-		s++;
-	}
-	return c;
-}
-
-const char * strlwr(const char * c){
-	char * s = (char*) c;
-
-	while(*s){
-		*s = tolower(*s);
-		s++;
-	}
-	return c;
-}
+static uint16_t current_address = 0;
+struct segment * current_segment = 0;
 
 int gettok(FILE * f){
 	static int last_char = tok_bol;
@@ -268,8 +250,8 @@ int gettok(FILE * f){
 	if(last_char == '\"'){
 		comment_str = (char*) calloc(COMMENT_BUFLEN,sizeof(char));
 		memset(comment_str,0,COMMENT_BUFLEN);
-		comment_str[0] = (char) last_char;
-		int i=1;
+		//comment_str[0] = (char) last_char;
+		int i=0;
 		size_t len = COMMENT_BUFLEN;
 		do{
 			last_char = fgetc(f);
@@ -284,7 +266,7 @@ int gettok(FILE * f){
 				comment_str = (char*) realloc(comment_str,len);
 			}
 		}while(i < len-1 && last_char != '\"');
-		comment_str[i] = '\0';
+		comment_str[i-1] = '\0';
 		last_char = ' ';
 		return tok_str;
 	}
@@ -362,9 +344,58 @@ static int nexttok(FILE * f){
 	return cur_tok = gettok(f);
 }
 
-void handle_segment(FILE * f){
-	fprintf(stderr,"Parsing segment: ");
+int write_segment(FILE * f, FILE * of){
+	if(current_segment != 0){
+		struct list_head * pos = 0;
+		struct statement * stmt = 0;
+
+		list_for_each(pos, &current_segment->statements.list){
+			stmt = list_entry(pos,struct statement,list);
+
+			if(stmt->type == st_def_str){
+				fwrite(stmt->str,sizeof(char),stmt->size,of);
+			}else
+			if(stmt->type == st_def_b){
+				fwrite(&stmt->num,sizeof(char),1,of);
+			}else
+			if(stmt->type == st_def_w){
+				fwrite(&stmt->num,sizeof(uint16_t),1,of);
+			}else
+			if(stmt->type == st_inst){
+				struct OP inst = opcodes[stmt->inst.id];
+				uint8_t bin = 0;
+				bin = inst.op;
+
+				if(inst.arg_types[0] == arg_reg || inst.arg_types[0] == arg_dirct){
+					bin = bin | ((stmt->inst.p1 & 0xF) << 1);
+				}
+				fwrite(&bin,sizeof(bin),1,of);
+
+				if(inst.arg_types[0] == arg_addr){
+					if(stmt->inst.address != 0){
+						fwrite(&stmt->inst.address->address,sizeof(uint16_t),1,of);
+					}else{
+						print_error("Error: %s","Label undefined\n");
+					}
+				}else
+				if(inst.arg_types[1] == arg_addr){
+					fwrite(&stmt->inst.p2,sizeof(uint16_t),1,of);
+				}else
+				if(inst.arg_types[1] == arg_dirct || inst.arg_types[1] == arg_port){
+					fwrite(&stmt->inst.p2,sizeof(uint8_t),1,of);
+				}
+			}
+		}
+	}
+}
+
+int handle_segment(FILE * f, FILE * of){
+
+	write_segment(f,of);
+
+	fprintf(stderr, "Parsing segment: ");
 	struct segment * new_segment = (struct segment *) malloc(sizeof(struct segment));
+	new_segment->length = 0;
 	int type = 0;
 
 	new_segment->type = -1;
@@ -375,9 +406,13 @@ void handle_segment(FILE * f){
 		}
 	}
 
+	uint16_t binary_type = 0x1000;
+
 	switch (new_segment->type)
 	{
 	case seg_comment:
+		fwrite(&binary_type,sizeof(uint16_t),1,of);
+
 		new_segment->base_address = -1; //comments do not exist in application memory
 		nexttok(f);
 		if(cur_tok == tok_eol){
@@ -387,14 +422,21 @@ void handle_segment(FILE * f){
 			new_segment->string = comment_str;
 			comment_str = 0;
 			new_segment->length = strlen(new_segment->string);
+
+			fwrite(&new_segment->length,sizeof(uint16_t),1,of);
+			fwrite(new_segment->string,sizeof(char),new_segment->length,of);
 		}else{
 			goto error;
 		}
 		break;
 	case seg_data:
+		binary_type = 0x2000;
+		fwrite(&binary_type,sizeof(uint16_t),1,of);
+
 		if(nexttok(f) == tok_num){
 			new_segment->base_address = num_value;
 			current_address = new_segment->base_address;
+			fwrite(&current_address,sizeof(uint16_t),1,of);
 			if(nexttok(f) == tok_eol){
 				break;
 			}else{
@@ -416,14 +458,15 @@ void handle_segment(FILE * f){
 	fprintf(stderr,".%s segment found,base: 0x%x length: %d\r\n", identifier_str,new_segment->base_address,new_segment->length);
 	nexttok(f);
 
-	return;
+	return 0;
 
 error:
 	print_error( "Syntax error: unexpected token: %d %s\r\n",cur_tok,identifier_str);
 	free(new_segment);
+	return -1;
 }
 
-void parse_label(){
+int parse_label(){
 	fprintf(stderr, "Found label: %s address: 0x%x\r\n",identifier_str,current_address);
 	struct label * lab = (struct label *) malloc(sizeof(struct label));
 	lab->address = current_address;
@@ -437,11 +480,28 @@ void parse_label(){
 		fprintf(stderr,"Main label found!\r\n");
 	}
 
-	//todo: check if label already exists
-	queue_add(&lab->list,&current_segment->labels);
+	//Search for duplicates
+	struct list_head * pos;
+	struct label * tmp;
+	int found = 0;
+	list_for_each(pos,&current_segment->labels.list){
+		tmp = list_entry(pos,struct label,list);
+		
+		if(strncmp(tmp->name,lab->name,len) == 0){
+			found = 1;
+		}
+	}
+	if(found == 0){
+		queue_add(&lab->list,&current_segment->labels);
+	}else{
+		fprintf(stderr,"Error: Label already defined: %s\n",lab->name);
+		return -1;
+	}
+
+	return 0;
 }
 
-struct statement * parse_definition(FILE * f){
+struct statement * parse_definition(FILE * f, FILE * of){
 	struct statement * st = 0;
 	for(int i=0;i<DEF_MAX;i++){
 		if(strncmp(strupr(identifier_str),def_str[i],2) == 0){
@@ -467,6 +527,8 @@ struct statement * parse_definition(FILE * f){
 				fprintf(stderr,"%d\r\n",st->num);
 				break;
 			}else{
+				free(st);
+				st = 0;
 				print_error("Syntax error (line %d): unkown token %c(%d)\r\n",cur_line,cur_tok,cur_tok);
 			}
 		}
@@ -474,81 +536,95 @@ struct statement * parse_definition(FILE * f){
 	return st;
 }
 
-void handle_statement(FILE * f){
+struct statement * parse_instruction(FILE * f, FILE * of){
+	struct statement * st = 0;
+	//test instruction
+	for(int i=0;i<MNEM_MAX;i++){
+		//todo case sensitivity!!!
+		if(strncmp(strupr(identifier_str),mnemonic_str[i],3) == 0){
+			fprintf(stderr,"Instruction type %s ",identifier_str);
+			st = (struct statement*) malloc(sizeof(struct statement));
+			st->type = st_inst;
+			st->inst.id = i;
+			st->size = 1;
+			break;
+		}
+	}
+	nexttok(f);
+	if(st){
+		int num_args = 0;
+		struct OP * opcode = &opcodes[st->inst.id];
+		if(opcode->arg_types[0] != arg_none){
+			num_args = 1;
+			if(opcode->arg_types[1] != arg_none){
+				num_args = 2;
+			}
+		}
+		for(int i=0;i<num_args;i++){
+			if(cur_tok == tok_eol || cur_tok == tok_eof){
+				print_error("Syntax error (line %d): Expected argument, got nothing\r\n",cur_line);
+				break;
+			}else 
+			if(opcode->arg_types[i] == arg_dirct &&	cur_tok == tok_num){
+				fprintf(stderr,"%d", num_value);
+				st->num = num_value;
+				st->size += 1;
+			}else
+			if((opcode->arg_types[i] == arg_reg ||
+				opcode->arg_types[i] == arg_port) &&
+				cur_tok == tok_ident)
+			{
+				fprintf(stderr,"%s ",identifier_str);
+				st->size += 2;
+			}else
+			if((opcode->arg_types[i] == arg_addr) &&
+				cur_tok == tok_ident)
+			{
+				fprintf(stderr, "%s",identifier_str);
+				st->size += 3;
+			}
+			else{
+				print_error( "Syntax error (line %d): Unexpected token %c(%d)\r\n", cur_line,cur_tok, cur_tok);
+			}
+			nexttok(f);
+		}
+		fprintf(stderr,"\r\n");
+	}
+
+	return st;
+}
+
+int handle_statement(FILE * f, FILE * of){
 	if(cur_tok == tok_label){ //we read a label definition
 		parse_label();
 		do{
 			nexttok(f);
 		}while(cur_tok == tok_eol);
-		handle_statement(f);
+		handle_statement(f,of);
 	}else if(cur_tok == tok_ident){
 		struct statement * st;
 		//test definition
-		st = parse_definition(f);			
+		st = parse_definition(f,of);			
 		if(st){
 			queue_add(&st->list,&current_segment->statements);
 			current_address += st->size;
 			nexttok(f);
-			return;
-		}
-		
-		struct OP op;
-		//test instruction
-		for(int i=0;i<MNEM_MAX;i++){
-			//todo case sensitivity!!!
-			if(strncmp(strupr(identifier_str),mnemonic_str[i],3) == 0){
-				fprintf(stderr,"Instruction type %s ",identifier_str);
-				st = (struct statement*) malloc(sizeof(struct statement));
-				st->type = st_inst;
-				st->inst.id = i;
-				st->size = 1;
-				break;
+			return 0;
+		}else{
+			st = parse_instruction(f,of);
+			if(st){
+				queue_add(&st->list,&current_segment->statements);
+				current_address += st->size;
 			}
-		}
-		nexttok(f);
-		if(st){
-			int num_args = 0;
-			struct OP * opcode = &opcodes[st->inst.id];
-			if(opcode->arg_types[0] != arg_none){
-				num_args = 1;
-				if(opcode->arg_types[1] != arg_none){
-					num_args = 2;
-				}
-			}
-			for(int i=0;i<num_args;i++){
-				if(cur_tok == tok_eol || cur_tok == tok_eof){
-					print_error("Syntax error (line %d): Expected argument, got nothing\r\n",cur_line);
-					break;
-				}else 
-				if(opcode->arg_types[i] == arg_dirct &&
-				cur_tok == tok_num){
-					fprintf(stderr,"%d", num_value);
-				}else
-				if((opcode->arg_types[i] == arg_reg ||
-					opcode->arg_types[i] == arg_addr ||
-					opcode->arg_types[i] == arg_port) &&
-					cur_tok == tok_ident)
-				{				
-					fprintf(stderr,"%s ",identifier_str);
-					st->size += 2;
-				}
-				else{
-					print_error( "Syntax error (line %d): Unexpected token %c(%d)\r\n", cur_line,cur_tok, cur_tok);
-				}
-				nexttok(f);
-			}
-			fprintf(stderr,"\r\n");
-			current_address += st->size;
-			queue_add(&st->list,&current_segment->statements);
 		}
 	}else{
 		print_error("Syntax error (line %d): Unexpected token %c(%d)\r\n",cur_line,cur_tok,cur_tok);
 	}
-
-	return;
+	return 0;
 
 error:
 	print_error( "Syntax error (line %d): unexpected token: %d %s\r\n",cur_line,cur_tok,identifier_str);
+	return -1;
 }
 
 int main(int argc, char *argv[])
@@ -560,45 +636,48 @@ int main(int argc, char *argv[])
 
 		return 0;
 	}
-	char * inputName = argv[1];
-	FILE * inputFile = fopen(inputName,"r");
-	if(!inputFile)
+	char * input_name = argv[1];
+	FILE * input_file = fopen(input_name,"r");
+	if(!input_file)
 	{
-		printf("File could not be opened. Aborting...");
-		return 0;
+		printf("File could not be opened. Aborting...\n");
+		return errno;
 	}
 
 	init_opcodes();
 	cur_line = 0;
+	current_address = 0;
+	current_segment = 0;
 
 	INIT_QUEUE(&prg.segment_list);
 	prg.main_label = 0;
 
-	nexttok(inputFile);
+	FILE * output_file = fopen("out.prg","w");
+	if(!output_file){
+		printf("Could not open output file. Aborting...\n");
+		return errno;
+	}
+
+	nexttok(input_file);
 	
 	while(cur_tok != tok_eof){
 		switch(cur_tok){
 			case tok_eof:
-				return 0;
+				break;
 			case tok_eol: //eat empty lines
-				nexttok(inputFile);
+				nexttok(input_file);
 				break;
 			case tok_segment:
-				handle_segment(inputFile);
+				handle_segment(input_file,output_file);
 				break;
 			default:
-				handle_statement(inputFile);
+				handle_statement(input_file,output_file);
 				break;
 		}
 	}
+
+	fclose(input_file);
+	fclose(output_file);
 	
-	//1. tokenize input and type input: labels, instruction, string, sections
-
-	//3. turn labels into adresses (map instructions to memory locations)
- 
-	//4. turn strings into adresses
-
-	//4. copy adresses into jump instructions	
-
 	return 0;
 }

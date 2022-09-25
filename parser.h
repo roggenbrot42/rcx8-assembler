@@ -19,7 +19,7 @@ enum mnemonic_id {
 	CMA, RAL, RAR, TCC, DAC, STC, DAA, HLT,MNEM_MAX
 };
 
-enum {
+enum arg_types{
     arg_none,
     arg_reg,
     arg_dirct,
@@ -28,7 +28,7 @@ enum {
     arg_ptr,
     arg_port,
     num_argst
-} arg_types;
+};
 
 struct OP{
     uint8_t opid;
