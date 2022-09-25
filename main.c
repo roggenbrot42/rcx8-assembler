@@ -17,9 +17,7 @@ struct program {
 	struct queue segment_list;
 };
 
-struct OP opcodes[MNEM_MAX] = {{0}};
-
-void init_opcodes(struct parser_context * context){
+void init_opcodes(struct OP * opcodes){
 
 	//skip nop
 
@@ -118,11 +116,22 @@ void init_opcodes(struct parser_context * context){
 	opcodes[i].op = 0xE2;
 	opcodes[i++].arg_types[0] = arg_port;
 
-	//draw the rest of the owl
-	for(int k=0xE3;k<=0xFF;k++){
+	//kbi
+	opcodes[i++].op = 0xFC;
+
+	//asc
+	opcodes[i++].op = 0xFD;
+
+	//CLB to DAC
+	for(int k=0xF0;k<=0xF8;k++){
 		opcodes[i++].op = k;
 	}
 
+	//stc
+	opcodes[i++].op = 0xFA;
+
+	//daa
+	opcodes[i++].op = 0xFB;
 }
 
 
@@ -144,7 +153,7 @@ int write_segment(struct parser_context * context, struct segment * current_segm
 				fwrite(&stmt->num,sizeof(uint16_t),1,of);
 			}else
 			if(stmt->type == st_inst){
-				struct OP inst = opcodes[stmt->inst.id];
+				struct OP inst = context->opcodes[stmt->inst.id];
 				uint8_t bin = 0;
 				bin = inst.op;
 
@@ -301,7 +310,7 @@ int handle_statement(struct parser_context * context, struct segment_context * s
 			nexttok(context, f);
 			return 0;
 		}else{
-			st = parse_instruction(context, opcodes, f);
+			st = parse_instruction(context, context->opcodes, f);
 			if(st){
 				queue_add(&st->list,&seg_context->current_segment->statements);
 				seg_context->current_address += st->size;
@@ -341,13 +350,16 @@ int main(int argc, char *argv[])
 		return errno;
 	}
 
+	struct OP opcodes[MNEM_MAX] = {{0}};
+	init_opcodes(opcodes);
+
 	struct parser_context parse_context;
 	memset(parse_context.identifier_str, 0, IDENT_MAX);
 	parse_context.comment_str = 0;
 	parse_context.num_value = 0;
 	parse_context.cur_tok = 0;
 	parse_context.cur_line = 0;
-	init_opcodes(&parse_context);
+	parse_context.opcodes = opcodes;
 
 	struct segment_context segment_context;
 	segment_context.current_address = 0;

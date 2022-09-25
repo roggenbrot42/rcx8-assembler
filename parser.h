@@ -121,6 +121,7 @@ struct parser_context {
 	int num_value,
 		cur_tok,
 		cur_line;
+	struct OP * opcodes;
 };
 
 struct segment_context {
