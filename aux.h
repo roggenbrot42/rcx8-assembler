@@ -1,9 +1,11 @@
 #pragma once
 
 #include<ctype.h>
+#include<stdarg.h>
 
+#define print_error(format,...) fprintf(stderr,"\033[31m" format "\033[39m", __VA_ARGS__)
 
-const char * strupr(const char * c){
+static const char * strupr(const char * c){
 	char * s = (char*) c;
 
 	while(*s){
@@ -13,7 +15,7 @@ const char * strupr(const char * c){
 	return c;
 }
 
-const char * strlwr(const char * c){
+static const char * strlwr(const char * c){
 	char * s = (char*) c;
 
 	while(*s){

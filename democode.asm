@@ -33,7 +33,7 @@ dw 65345
 .data 0x0200
 main:
     nop
-    fim R0 0x00 #fill R0 and R1 with upper (^) and lower (?) bytes of hello address
+    fim R0 0x05 #fill R0 and R1 with upper (^) and lower (?) bytes of hello address
     fim R1 0x01
 print:
     fin R3
