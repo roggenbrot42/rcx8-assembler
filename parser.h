@@ -28,7 +28,8 @@ enum mnemonic_id {
 enum arg_types{
     arg_none,
     arg_reg,
-    arg_dirct,
+    arg_dirct4,
+	arg_dirct,
     arg_cnd, //unused
     arg_addr,
     arg_ptr,
@@ -99,6 +100,7 @@ struct statement {
 
 struct label {
 	uint16_t address;
+	char valid;
 	char * name;
 	struct list_head list;	
 };
@@ -135,6 +137,7 @@ int cur_tok(struct parser_context *context);
 int cur_line(struct parser_context *context);
 
 struct statement * parse_definition(struct parser_context * context, FILE * f);
+struct label * label_from_identifier(struct parser_context * parser_context);
 struct statement * parse_instruction(struct parser_context * context, struct OP *, FILE * f);
 
 #endif // PARSER_H

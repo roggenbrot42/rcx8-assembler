@@ -31,10 +31,14 @@ int gettok(struct parser_context *context, FILE * f){
 		} while (last_char != EOF && last_char != '\n' && last_char != '\r');
 	}
 
-	if((last_char == '\n' || last_char == '\r') && last_char != EOF){
-		do{
-			last_char = fgetc(f);
-		}while((last_char == '\n' || last_char == '\r') && last_char != EOF);
+	//Skip carriage return
+	if(last_char == '\r'){
+		last_char = fgetc(f);
+	}
+
+	//Count lines
+	if(last_char == '\n'){
+		last_char = fgetc(f);
 		context->cur_line++;
 		return tok_eol;
 	}
@@ -63,6 +67,9 @@ int gettok(struct parser_context *context, FILE * f){
 				context->comment_str[i] = (char) last_char;
 				i++;
 			}else{
+				if(last_char == '\n'){
+					context->cur_line++;
+				}
 				continue;
 			}
 			if(i > len-2){
@@ -159,7 +166,7 @@ struct statement * parse_definition(struct parser_context * context, FILE * f){
 	struct statement * st = 0;
 	for(int i=0;i<DEF_MAX;i++){
 		if(strncmp(strupr(context->identifier_str),def_str[i],2) == 0){
-			fprintf(stderr,"Definition type %s ",context->identifier_str);
+			fprintf(stderr,"%d: Definition type %s ",context->cur_line,context->identifier_str);
 			nexttok(context, f);
 			st = (struct statement*) malloc(sizeof(struct statement));
 			if(i == 0 && cur_tok(context) == tok_str){
@@ -190,13 +197,25 @@ struct statement * parse_definition(struct parser_context * context, FILE * f){
 	return st;
 }
 
+struct label * label_from_identifier(struct parser_context * context){
+	struct label * lab = (struct label *) malloc(sizeof(struct label));
+	lab->address = 0;
+	lab->valid = 0; //invalid address
+
+	int len = strlen(context->identifier_str);
+	lab->name = (char *) calloc(len, sizeof(char));
+	memcpy(lab->name,context->identifier_str,len);
+
+	return lab;
+}
+
 struct statement * parse_instruction(struct parser_context * context, struct OP * opcodes, FILE * f){
 	struct statement * st = 0;
 	//test instruction
 	for(int i=0;i<MNEM_MAX;i++){
 		//todo case sensitivity!!!
 		if(strncmp(strupr(context->identifier_str),mnemonic_str[i],3) == 0){
-			fprintf(stderr,"Instruction type %s ",context->identifier_str);
+			fprintf(stderr,"%d: Instruction type %s ",context->cur_line, context->identifier_str);
 			st = (struct statement*) malloc(sizeof(struct statement));
 			st->type = st_inst;
 			st->inst.id = i;
@@ -218,31 +237,40 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 			if(cur_tok(context) == tok_eol || cur_tok(context) == tok_eof){
 				print_error("Syntax error (line %d): Expected argument, got nothing\r\n",cur_line(context));
 				break;
+			}else
+			if(opcode->arg_types[i] == arg_reg && cur_tok(context) == tok_ident){
+				fprintf(stderr, "%s ", context->identifier_str);
+				sscanf(context->identifier_str, "R%d", &st->inst.p1);
+			}else
+			if(opcode->arg_types[i] == arg_dirct4 && cur_tok(context) == tok_num){
+				fprintf(stderr, "%d ", context->num_value);
+				st->inst.p1 = context->num_value;
 			}else 
 			if(opcode->arg_types[i] == arg_dirct &&	cur_tok(context) == tok_num){
-				fprintf(stderr,"%d", context->num_value);
-				st->num = context->num_value;
+				fprintf(stderr,"%d ", context->num_value);
+				st->inst.p2 = context->num_value;
 				st->size += 1;
 			}else
-			if((opcode->arg_types[i] == arg_reg ||
-				opcode->arg_types[i] == arg_port) &&
-				cur_tok(context) == tok_ident)
+			if(opcode->arg_types[i] == arg_port && cur_tok(context) == tok_ident)
 			{
 				fprintf(stderr,"%s ",context->identifier_str);
-				st->size += 2;
+				sscanf(context->identifier_str, "P%d",&st->inst.p2);
+				st->size += 1;
 			}else
 			if((opcode->arg_types[i] == arg_addr) &&
 				cur_tok(context) == tok_ident)
 			{
-				fprintf(stderr, "%s",context->identifier_str);
-				st->size += 3;
+				fprintf(stderr, "%s ",context->identifier_str);
+				struct label * lab = label_from_identifier(context);
+				st->inst.address = lab;
+				st->size += 2;
 			}
 			else{
 				print_error( "Syntax error (line %d): Unexpected token %c(%d)\r\n", cur_line(context),cur_tok(context), cur_tok(context));
 			}
 			nexttok(context, f);
 		}
-		fprintf(stderr,"\r\n");
+		fprintf(stderr," size:%d\r\n",st->size);
 	}
 
 	return st;

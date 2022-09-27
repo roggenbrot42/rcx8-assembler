@@ -102,11 +102,11 @@ void init_opcodes(struct OP * opcodes){
 
 	//bbl
 	opcodes[i].op = 0xC0;
-	opcodes[i++].arg_types[0] = arg_dirct;
+	opcodes[i++].arg_types[0] = arg_dirct4;
 
 	//ldm
 	opcodes[i].op = 0xD0;
-	opcodes[i++].arg_types[0] = arg_dirct;
+	opcodes[i++].arg_types[0] = arg_dirct4;
 
 	//wmp
 	opcodes[i].op = 0xE1;
@@ -135,45 +135,53 @@ void init_opcodes(struct OP * opcodes){
 }
 
 
-int write_segment(struct parser_context * context, struct segment * current_segment, FILE * f, FILE * of){
+int write_data_segment(struct parser_context * context, struct segment * current_segment, char * buffer){
 	if(current_segment != 0){
 		struct list_head * pos = 0;
 		struct statement * stmt = 0;
+		int size = 0;
 
 		list_for_each(pos, &current_segment->statements.list){
 			stmt = list_entry(pos,struct statement,list);
 
 			if(stmt->type == st_def_str){
-				fwrite(stmt->str,sizeof(char),stmt->size,of);
+				memcpy(buffer, stmt->str,sizeof(char)*stmt->size);
+				buffer +=stmt->size;
 			}else
 			if(stmt->type == st_def_b){
-				fwrite(&stmt->num,sizeof(char),1,of);
+				memcpy(buffer, &stmt->num,sizeof(char));
+				buffer += 1;
 			}else
 			if(stmt->type == st_def_w){
-				fwrite(&stmt->num,sizeof(uint16_t),1,of);
+				memcpy(buffer, &stmt->num,sizeof(uint16_t));
+				buffer += 2;
 			}else
 			if(stmt->type == st_inst){
 				struct OP inst = context->opcodes[stmt->inst.id];
 				uint8_t bin = 0;
 				bin = inst.op;
 
-				if(inst.arg_types[0] == arg_reg || inst.arg_types[0] == arg_dirct){
+				if(inst.arg_types[0] == arg_reg || inst.arg_types[0] == arg_dirct4){
 					bin = bin | ((stmt->inst.p1 & 0xF) << 1);
 				}
-				fwrite(&bin,sizeof(bin),1,of);
+				memcpy(buffer, &bin,sizeof(bin));
+				buffer += sizeof(bin);
 
 				if(inst.arg_types[0] == arg_addr){
 					if(stmt->inst.address != 0){
-						fwrite(&stmt->inst.address->address,sizeof(uint16_t),1,of);
+						memcpy(buffer, &stmt->inst.address->address,sizeof(uint16_t));
+						buffer += 2;
 					}else{
 						print_error("Error: %s","Label undefined\n");
 					}
 				}else
 				if(inst.arg_types[1] == arg_addr){
-					fwrite(&stmt->inst.p2,sizeof(uint16_t),1,of);
+					memcpy(buffer, &stmt->inst.p2,sizeof(uint16_t));
+					buffer += 2;
 				}else
 				if(inst.arg_types[1] == arg_dirct || inst.arg_types[1] == arg_port){
-					fwrite(&stmt->inst.p2,sizeof(uint8_t),1,of);
+					memcpy(buffer, &stmt->inst.p2,sizeof(uint8_t));
+					buffer += 1;
 				}
 			}
 		}
@@ -181,8 +189,6 @@ int write_segment(struct parser_context * context, struct segment * current_segm
 }
 
 int handle_segment(struct parser_context * context, struct segment_context * seg_context, struct program * prg, FILE * f, FILE * of){
-
-	write_segment(context, seg_context->current_segment, f, of);
 
 	fprintf(stderr, "Parsing segment: ");
 	struct segment * new_segment = (struct segment *) malloc(sizeof(struct segment));
@@ -224,6 +230,10 @@ int handle_segment(struct parser_context * context, struct segment_context * seg
 		binary_type = 0x2000;
 		fwrite(&binary_type,sizeof(uint16_t),1,of);
 
+		char buffer[UINT16_MAX];
+		uint16_t size = 0;
+		size = write_data_segment(context, seg_context->current_segment, buffer); // TODO this is bullshit, we can't know that yet
+
 		if(nexttok(context, f) == tok_num){
 			new_segment->base_address = context->num_value;
 			seg_context->current_address = new_segment->base_address;
@@ -236,6 +246,10 @@ int handle_segment(struct parser_context * context, struct segment_context * seg
 		}else{
 			goto error;
 		}
+
+		fwrite(&size, sizeof(uint16_t),1, of);
+		fwrite(buffer, sizeof(uint8_t), size, of);
+
 	case seg_input:
 		break;	//todo
 	default:
@@ -259,12 +273,11 @@ error:
 
 int parse_label(struct parser_context * context, struct segment_context * seg_context, struct program * prg){
 	fprintf(stderr, "Found label: %s address: 0x%x\r\n",context->identifier_str, seg_context->current_address);
-	struct label * lab = (struct label *) malloc(sizeof(struct label));
+	struct label * lab = label_from_identifier(context);
 	lab->address = seg_context->current_address;
+	lab->valid = 1;
 
 	int len = strlen(context->identifier_str);
-	lab->name = (char *) calloc(len, sizeof(char));
-	memcpy(lab->name,context->identifier_str,len);
 
 	if(strncmp("main",lab->name,len) == 0){
 		prg->main_label = lab;
@@ -284,6 +297,10 @@ int parse_label(struct parser_context * context, struct segment_context * seg_co
 	}
 	if(found == 0){
 		queue_add(&lab->list,&seg_context->current_segment->labels);
+	}else
+	if(tmp->valid == 0){ //address not yet known? 
+		tmp->address = lab->address;
+		tmp->valid = 1;
 	}else{
 		fprintf(stderr,"Error: Label already defined: %s\n",lab->name);
 		return -1;
@@ -325,6 +342,74 @@ int handle_statement(struct parser_context * context, struct segment_context * s
 error:
 	print_error( "2-Syntax error (line %d): unexpected token: %d %s\r\n",cur_line(context),cur_tok(context),context->identifier_str);
 	return -1;
+}
+
+struct label * get_label(struct queue labels, char * name){
+	struct list_head * lab_pos;
+	struct label * tmp_lab;
+
+	list_for_each(lab_pos, &labels.list){
+		tmp_lab = list_entry(lab_pos, struct label, list);
+		if(strcmp(name,tmp_lab->name) == 0){ //todo strncmp
+			return tmp_lab;
+		}
+	}
+
+	return 0;
+}
+
+int resolve_label_addresses(struct segment_context * seg_context){
+	struct list_head * seg_pos;
+	struct statement * tmp_st;
+	struct label * tmp_lab;
+
+	if(seg_context->current_segment == 0 || seg_context->current_segment->type != seg_data){
+		return 0;
+	}
+
+	list_for_each(seg_pos, &seg_context->current_segment->statements.list){ //for every statement in the segment
+		tmp_st = list_entry(seg_pos,struct statement,list);
+
+		if(tmp_st->type == st_inst && tmp_st->inst.address != 0 && tmp_st->inst.address->valid == 0){//skip if address is known
+			tmp_lab = get_label(seg_context->current_segment->labels, tmp_st->inst.address->name);
+			if(tmp_lab == 0){
+				print_error("Label not found: %s", tmp_st->inst.address->name);
+				return -1;
+			}
+			tmp_st->inst.address = tmp_lab;
+		}
+	}
+
+	printf("------------\r\nLabels in this segment:\r\n", NULL);
+	struct list_head * label_pos;
+	list_for_each(label_pos, &seg_context->current_segment->labels.list){
+		tmp_lab = list_entry(label_pos, struct label, list);
+		printf("Label Name: %s Address: 0x%x\r\n", tmp_lab->name, tmp_lab->address);
+	}
+
+	printf("------------\r\nStatements in this segment:\r\n",NULL);
+	struct list_head * st_pos;
+	list_for_each(st_pos, &seg_context->current_segment->statements.list){
+		tmp_st = list_entry(st_pos, struct statement, list);
+		switch(tmp_st->type){
+			case st_def_b:
+				printf("DB %d", tmp_st->num);
+				break;
+			case st_def_w:
+				printf("DW %d", tmp_st->num);
+				break;
+			case st_def_str:
+				printf("DS %s", tmp_st->str);
+				break;
+			case st_inst:
+				struct instruction inst = tmp_st->inst;
+				printf("%s R%d D%d A0x%x", mnemonic_str[inst.id],inst.p1,inst.p2,(inst.address != 0)?inst.address->address:0);
+				break;
+			default:
+				break;
+		}
+		printf("\r\n");
+	}
 }
 
 int main(int argc, char *argv[])
@@ -382,6 +467,7 @@ int main(int argc, char *argv[])
 				nexttok(&parse_context, input_file);
 				break;
 			case tok_segment:
+				resolve_label_addresses(&segment_context);
 				error = handle_segment(&parse_context, &segment_context, &prg, input_file, output_file);
 				break;
 			default:
@@ -389,6 +475,8 @@ int main(int argc, char *argv[])
 				break;
 		}
 	}
+
+	resolve_label_addresses(&segment_context);
 
 	fclose(input_file);
 	fclose(output_file);
