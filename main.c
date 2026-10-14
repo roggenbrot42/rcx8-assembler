@@ -21,60 +21,69 @@ struct program {
 	struct queue segment_list;
 };
 
-struct label * get_label(struct queue labels, char * name){
+//labels are global to the program, so search every data segment
+struct label * get_label(struct program * prg, char * name){
+	struct list_head * seg_pos;
 	struct list_head * lab_pos;
+	struct segment * seg;
 	struct label * tmp_lab;
 
-	list_for_each(lab_pos, &labels.list){
-		tmp_lab = list_entry(lab_pos, struct label, list);
-		if(strcmp(name,tmp_lab->name) == 0){ //todo strncmp
-			return tmp_lab;
+	list_for_each(seg_pos, &prg->segment_list.list){
+		seg = list_entry(seg_pos, struct segment, list);
+		if(seg->type != seg_data){
+			continue;
+		}
+		list_for_each(lab_pos, &seg->labels.list){
+			tmp_lab = list_entry(lab_pos, struct label, list);
+			if(strcmp(name,tmp_lab->name) == 0){
+				return tmp_lab;
+			}
 		}
 	}
 
 	return 0;
 }
 
-int finalize_segment(struct segment_context * seg_context, struct program * prg){
+int finalize_segment(struct segment * seg, struct program * prg){
 	struct list_head * seg_pos;
 	struct statement * tmp_st;
 	struct label * tmp_lab;
 
-	if(seg_context == 0){
+	if(seg == 0){
 		return -1;
 	}
 
-	if(seg_context->current_segment == 0 || seg_context->current_segment->type != seg_data){
+	if(seg->type != seg_data){
 		return 0;
 	}
 
-	list_for_each(seg_pos, &seg_context->current_segment->statements.list){ //for every statement in the segment
+	list_for_each(seg_pos, &seg->statements.list){ //for every statement in the segment
 		tmp_st = list_entry(seg_pos,struct statement,list);
 
 		if(tmp_st->type == st_inst && tmp_st->inst.address != 0 && tmp_st->inst.address->valid == 0){//skip if address is known
-			tmp_lab = get_label(seg_context->current_segment->labels, tmp_st->inst.address->name);
+			tmp_lab = get_label(prg, tmp_st->inst.address->name);
 			if(tmp_lab == 0){
-				print_error("Label not found: %s", tmp_st->inst.address->name);
+				print_error("Label not found: %s\n", tmp_st->inst.address->name);
 				return -1;
 			}
 			tmp_st->inst.address = tmp_lab;
 		}
 	}
 
-	printf("------------\r\nLabels in this segment:\r\n", NULL);
+	printf("------------\r\nLabels in this segment:\r\n");
 	struct list_head * label_pos;
-	list_for_each(label_pos, &seg_context->current_segment->labels.list){
+	list_for_each(label_pos, &seg->labels.list){
 		tmp_lab = list_entry(label_pos, struct label, list);
-		if(strcmp("main", tmp_lab->name)){
+		if(strcmp("main", tmp_lab->name) == 0){
 			prg->main_label = tmp_lab;
 		}
 		printf("Label Name: %s Address: 0x%x\r\n", tmp_lab->name, tmp_lab->address);
 	}
 
-	printf("------------\r\nStatements in this segment:\r\n",NULL);
+	printf("------------\r\nStatements in this segment:\r\n");
 	struct list_head * st_pos;
-	uint16_t running_address = seg_context->current_segment->base_address;
-	list_for_each(st_pos, &seg_context->current_segment->statements.list){
+	uint16_t running_address = seg->base_address;
+	list_for_each(st_pos, &seg->statements.list){
 		tmp_st = list_entry(st_pos, struct statement, list);
 		switch(tmp_st->type){
 			case st_def_b:
@@ -133,17 +142,14 @@ int write_data_segment(struct program prg, struct segment * current_segment, FIL
 				fwrite(&bin,sizeof(bin),1,of);
 				size += sizeof(bin);
 
-				if(inst.arg_types[0] == arg_addr){
-					if(stmt->inst.address != 0){
+				if(inst.arg_types[0] == arg_addr || inst.arg_types[1] == arg_addr){
+					if(stmt->inst.address != 0 && stmt->inst.address->valid){
 						fwrite(&stmt->inst.address->address,sizeof(uint16_t),1,of);
 						size += 2;
 					}else{
 						print_error("Error: %s","Label undefined\n");
+						return -1;
 					}
-				}else
-				if(inst.arg_types[1] == arg_addr){
-					fwrite(&stmt->inst.p2,sizeof(uint16_t),1,of);
-					size += 2;
 				}else
 				if(inst.arg_types[1] == arg_dirct || inst.arg_types[1] == arg_port){
 					fwrite(&stmt->inst.p2,sizeof(uint8_t),1,of);
@@ -163,7 +169,7 @@ int write_data_segment(struct program prg, struct segment * current_segment, FIL
 int write_start_address(struct program prg, FILE * of){
 	uint16_t start_addr = 0x7000;
 	fwrite(&start_addr, sizeof(uint16_t),1,of);
-	fwrite(prg.main_label,sizeof(uint16_t),1,of);
+	fwrite(&prg.main_label->address,sizeof(uint16_t),1,of);
 	
 	return 0;
 }
@@ -207,7 +213,7 @@ int write_segments(struct program prg, struct list_head * list, FILE * of){
 				break;
 		}
 		if(error != 0){
-			print_error("Unkown segment error: %d\n", seg_iter->type);
+			print_error("Segment write error: %d\n", seg_iter->type);
 			return -1;
 		}
 	}
@@ -232,7 +238,8 @@ int main(int argc, char *argv[])
 		return errno;
 	}
 
-	FILE * output_file = fopen("out.prg","w");
+	char * output_name = (argc > 2) ? argv[2] : "out.prg";
+	FILE * output_file = fopen(output_name,"wb");
 	if(!output_file){
 		printf("Could not open output file. Aborting...\n");
 		return errno;
@@ -268,12 +275,11 @@ int main(int argc, char *argv[])
 				nexttok(&parse_context, input_file);
 				break;
 			case tok_segment:
-				if(segment_context.current_segment){ //finalize segment if any
-					finalize_segment(&segment_context, &prg);
-				}
 				memset(&segment_context,0,sizeof(struct segment_context));
 				error = parse_segment(&parse_context, &segment_context, input_file);
-				queue_add(&segment_context.current_segment->list,&prg.segment_list);
+				if(error == 0){
+					queue_add(&segment_context.current_segment->list,&prg.segment_list);
+				}
 				break;
 			default:
 				error = parse_statement(&parse_context, &segment_context, input_file);
@@ -281,26 +287,41 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	finalize_segment(&segment_context, &prg);
+	//resolve labels once every segment is known
+	struct list_head * seg_pos;
+	list_for_each(seg_pos, &prg.segment_list.list){
+		if(error == 0){
+			error = finalize_segment(list_entry(seg_pos, struct segment, list), &prg);
+		}
+	}
+
+	if(error == 0 && prg.main_label == 0){
+		print_error("Error: %s","no 'main' label found\n");
+		error = -1;
+	}
+
+	if(error != 0){
+		print_error("Assembly failed: %d. Exiting...\n",error);
+		fclose(input_file);
+		fclose(output_file);
+		remove(output_name);
+		return 1;
+	}
 
 	//write program
 	//1. write start address
 	write_start_address(prg, output_file);
 
 	//2. write segments
-	write_segments(prg, &prg.segment_list.list, output_file);
+	error = write_segments(prg, &prg.segment_list.list, output_file);
+
 	//3. write eof block
 	uint16_t eofblock = 0x0;
 	fwrite(&eofblock, sizeof(uint16_t), 1, output_file);
-
-	if(error != 0){
-		print_error("Something failed: %d. Exiting...\n",error);
-		goto out;
-	}
 
 out:
 	fclose(input_file);
 	fclose(output_file);
 	
-	return 0;
+	return error != 0;
 }

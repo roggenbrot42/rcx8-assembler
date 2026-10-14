@@ -63,13 +63,19 @@ int gettok(struct parser_context *context, FILE * f){
 		size_t len = COMMENT_BUFLEN;
 		do{
 			last_char = fgetc(f);
-			if(isprint(last_char)){
+			if(last_char == EOF){
+				print_error("Syntax error (line %d): unterminated string\r\n",context->cur_line);
+				free(context->comment_str);
+				context->comment_str = 0;
+				return tok_eof;
+			}
+			if(isprint(last_char) || last_char == '\n'){
 				context->comment_str[i] = (char) last_char;
 				i++;
-			}else{
 				if(last_char == '\n'){
 					context->cur_line++;
 				}
+			}else{
 				continue;
 			}
 			if(i > len-2){
@@ -89,13 +95,9 @@ int gettok(struct parser_context *context, FILE * f){
 		if(last_char == 'x'){
 			last_char=fgetc(f);
 			for(int i=0;i<NUM_DIGITS_HEX;i++){
-				if(isdigit(last_char)){
+				if(isxdigit(last_char)){
 					context->num_value = context->num_value << 4;
-					context->num_value += last_char - '0';
-				}else if (isalpha(last_char))
-				{
-					context->num_value = context->num_value << 4;
-					context->num_value += last_char + 10 - 'A'; //better check case
+					context->num_value += isdigit(last_char) ? last_char - '0' : toupper(last_char) + 10 - 'A';
 				}else{
 					break;
 				}
@@ -115,6 +117,12 @@ int gettok(struct parser_context *context, FILE * f){
 			}
 			return tok_num;
 		}
+		//plain decimal starting with 0 (or just "0")
+		for(int i=0;isdigit(last_char) && i<NUM_DIGITS_DEC-1;i++){
+			context->num_value = context->num_value*10 + last_char - '0';
+			last_char = fgetc(f);
+		}
+		return tok_num;
 	}
 	if(isdigit(last_char)){
 		for(int i=0;isdigit(last_char) && i<NUM_DIGITS_DEC;i++){
@@ -128,8 +136,8 @@ int gettok(struct parser_context *context, FILE * f){
 	if(isalpha(last_char)){
 		context->identifier_str[ident_index++] = (char)last_char;
 
-		while(isalnum((last_char=fgetc(f))) //lol abfuck, fixme
-				&& ident_index < IDENT_MAX){
+		while((isalnum(last_char=fgetc(f)) || last_char == '_')
+				&& ident_index < IDENT_MAX - 1){
 			context->identifier_str[ident_index++] = (char)last_char;
 		}
 
@@ -166,7 +174,7 @@ int cur_line(struct parser_context * context){
 struct statement * parse_definition(struct parser_context * context, FILE * f){
 	struct statement * st = 0;
 	for(int i=0;i<DEF_MAX;i++){
-		if(strncmp(strupr(context->identifier_str),def_str[i],2) == 0){
+		if(strcmp(strupr(context->identifier_str),def_str[i]) == 0){
 			fprintf(stderr,"%d: Definition type %s ",context->cur_line,context->identifier_str);
 			nexttok(context, f);
 			st = (struct statement*) malloc(sizeof(struct statement));
@@ -204,7 +212,7 @@ struct label * label_from_identifier(struct parser_context * context){
 	lab->valid = 0; //invalid address
 
 	int len = strlen(context->identifier_str);
-	lab->name = (char *) calloc(len, sizeof(char));
+	lab->name = (char *) calloc(len + 1, sizeof(char));
 	memcpy(lab->name,context->identifier_str,len);
 
 	return lab;
@@ -215,7 +223,7 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 	//test instruction
 	for(int i=0;i<MNEM_MAX;i++){
 		//todo case sensitivity!!!
-		if(strncmp(strupr(context->identifier_str),mnemonic_str[i],3) == 0){
+		if(strcmp(strupr(context->identifier_str),mnemonic_str[i]) == 0){
 			fprintf(stderr,"%d: Instruction type %s ",context->cur_line, context->identifier_str);
 			st = (struct statement*) malloc(sizeof(struct statement));
 			st->type = st_inst;
@@ -224,8 +232,15 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 			break;
 		}
 	}
+	if(!st){
+		print_error("Syntax error (line %d): unknown instruction %s\r\n",cur_line(context),context->identifier_str);
+		return 0;
+	}
 	nexttok(context, f);
 	if(st){
+		st->inst.p1 = 0;
+		st->inst.p2 = 0;
+		st->inst.address = 0;
 		int num_args = 0;
 		struct OP * opcode = &opcodes[st->inst.id];
 		if(opcode->arg_types[0] != arg_none){
@@ -237,11 +252,12 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 		for(int i=0;i<num_args;i++){
 			if(cur_tok(context) == tok_eol || cur_tok(context) == tok_eof){
 				print_error("Syntax error (line %d): Expected argument, got nothing\r\n",cur_line(context));
-				break;
+				free(st);
+				return 0;
 			}else
 			if(opcode->arg_types[i] == arg_reg && cur_tok(context) == tok_ident){
 				fprintf(stderr, "%s ", context->identifier_str);
-				sscanf(context->identifier_str, "R%d", &st->inst.p1);
+				sscanf(strupr(context->identifier_str), "R%hu", &st->inst.p1);
 			}else
 			if(opcode->arg_types[i] == arg_dirct4 && cur_tok(context) == tok_num){
 				fprintf(stderr, "%d ", context->num_value);
@@ -255,7 +271,7 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 			if(opcode->arg_types[i] == arg_port && cur_tok(context) == tok_ident)
 			{
 				fprintf(stderr,"%s ",context->identifier_str);
-				sscanf(context->identifier_str, "P%d",&st->inst.p2);
+				sscanf(strupr(context->identifier_str), "P%hu",&st->inst.p2);
 				st->size += 1;
 			}else
 			if((opcode->arg_types[i] == arg_addr) &&
@@ -268,6 +284,8 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 			}
 			else{
 				print_error( "Syntax error (line %d): Unexpected token %c(%d)\r\n", cur_line(context),cur_tok(context), cur_tok(context));
+				free(st);
+				return 0;
 			}
 			nexttok(context, f);
 		}
@@ -283,70 +301,75 @@ int parse_label(struct parser_context * context, struct segment_context * seg_co
 	lab->address = seg_context->current_address;
 	lab->valid = 1;
 
-	int len = strlen(context->identifier_str);
-
-	if(strncmp("main",lab->name,len) == 0){
+	if(strcmp("main",lab->name) == 0){
 		fprintf(stderr,"Main label found!\r\n");
 	}
 
 	//Search for duplicates
 	struct list_head * pos;
 	struct label * tmp;
-	int found = 0;
 	list_for_each(pos,&seg_context->current_segment->labels.list){
 		tmp = list_entry(pos,struct label,list);
-		
-		if(strncmp(tmp->name,lab->name,len) == 0){
-			found = 1;
+
+		if(strcmp(tmp->name,lab->name) == 0){
+			print_error("Error (line %d): Label already defined: %s\n",cur_line(context),lab->name);
+			free(lab->name);
+			free(lab);
+			return -1;
 		}
 	}
-	if(found == 0){
-		queue_add(&lab->list,&seg_context->current_segment->labels);
-	}else
-	if(tmp->valid == 0){ //address not yet known? 
-		tmp->address = lab->address;
-		tmp->valid = 1;
-	}else{
-		fprintf(stderr,"Error: Label already defined: %s\n",lab->name);
-		return -1;
-	}
+	queue_add(&lab->list,&seg_context->current_segment->labels);
 
 	return 0;
 }
 
+static int is_definition(const char * ident){
+	for(int i=0;i<DEF_MAX;i++){
+		if(strcmp(strupr((char*)ident),def_str[i]) == 0){
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int parse_statement(struct parser_context * context, struct segment_context * seg_context, FILE * f){
+	if(seg_context->current_segment == 0){
+		print_error("Syntax error (line %d): statement outside of a segment\r\n",cur_line(context));
+		return -1;
+	}
+
 	if(cur_tok(context) == tok_label){ //we read a label definition
-		parse_label(context,seg_context);
+		if(parse_label(context,seg_context) != 0){
+			return -1;
+		}
 		do{
 			nexttok(context, f);
-			context->cur_line++;
 		}while(cur_tok(context) == tok_eol);//eat empty lines
-		parse_statement(context, seg_context, f);
+		if(cur_tok(context) == tok_segment || cur_tok(context) == tok_eof){
+			return 0; //label at the end of a segment
+		}
+		return parse_statement(context, seg_context, f);
 	}else if(cur_tok(context) == tok_ident){
 		struct statement * st;
-		//test definition
-		st = parse_definition(context, f);			
-		if(st){
-			queue_add(&st->list,&seg_context->current_segment->statements);
-			seg_context->current_address += st->size;
+		if(is_definition(context->identifier_str)){
+			st = parse_definition(context, f);
+			if(!st){
+				return -1;
+			}
 			nexttok(context, f);
-			return 0;
 		}else{
 			st = parse_instruction(context, context->opcodes, f);
-			if(st){
-				queue_add(&st->list,&seg_context->current_segment->statements);
-				seg_context->current_address += st->size;
+			if(!st){
+				return -1;
 			}
 		}
+		queue_add(&st->list,&seg_context->current_segment->statements);
+		seg_context->current_address += st->size;
 	}else{
-		print_error("1-Syntax error (line %d): unexpected token %x (%d)\r\n",cur_line(context),context->num_value,cur_tok(context));
+		print_error("Syntax error (line %d): unexpected token %x (%d)\r\n",cur_line(context),context->num_value,cur_tok(context));
 		return -1;
 	}
 	return 0;
-
-error:
-	print_error( "2-Syntax error (line %d): unexpected token: %d %s\r\n",cur_line(context),cur_tok(context),context->identifier_str);
-	return -1;
 }
 
 int parse_segment(struct parser_context * context, struct segment_context * seg_context, FILE * f){

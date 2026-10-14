@@ -31,7 +31,7 @@ void init_opcodes(struct OP * opcodes){
 	//ftc
 	opcodes[i].op = 0x31;
 	opcodes[i].arg_types[0] = arg_reg;
-	opcodes[i++].arg_types[0] = arg_addr;
+	opcodes[i++].arg_types[1] = arg_addr;
 
 	//jun
 	opcodes[i].op = 0x40;
