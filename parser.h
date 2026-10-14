@@ -40,11 +40,25 @@ enum statement_type {
 	st_inst
 };
 
+enum expr_func {
+	expr_plain,
+	expr_lo,
+	expr_hi
+};
+
+// [lo|hi]( [label] +/- constants ), evaluated once all labels are known
+struct expr {
+	char * name;	// label name or 0
+	int32_t value;	// constant part, final value after resolving
+	int func;
+	int line;
+};
+
 struct instruction{
 	int id;
-	uint16_t p1; // 4 Bit parameter
-	uint16_t p2; // 8 Bit parameter
-	struct label * address;
+	uint16_t p1; // register or 4 Bit parameter
+	uint16_t p2; // 8 Bit parameter, port or 16 Bit address
+	struct expr * expr; // unresolved value for the non register argument
 };
 
 struct statement {
@@ -55,6 +69,8 @@ struct statement {
 		struct instruction inst;
 		uint16_t num;
 	};
+	struct expr * expr; // unresolved value of db/dw
+	int line;
 	struct list_head list;
 };
 
@@ -82,7 +98,9 @@ struct parser_context {
 	char * comment_str;
 	int num_value,
 		cur_tok,
-		cur_line;
+		cur_line,
+		last_char;
+	const char * filename;
 	struct OP * opcodes;
 };
 
@@ -96,7 +114,8 @@ int nexttok(struct parser_context *context, FILE * f);
 int cur_tok(struct parser_context *context);
 int cur_line(struct parser_context *context);
 
-struct statement * parse_definition(struct parser_context * context, FILE * f);
+struct expr * parse_expr(struct parser_context * context, FILE * f);
+int parse_definition(struct parser_context * context, struct segment_context * seg_context, FILE * f);
 struct label * label_from_identifier(struct parser_context * parser_context);
 struct statement * parse_instruction(struct parser_context * context, struct OP *, FILE * f);
 int parse_label(struct parser_context * context, struct segment_context * seg_context);

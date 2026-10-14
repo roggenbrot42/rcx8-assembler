@@ -1,0 +1,24 @@
+RCx8 assembler
+
+Usage: rcx8asm inputfile [outputfile] [-l listingfile]
+  outputfile defaults to out.prg, a listing file of - writes to stdout.
+
+Source format
+  # comment                       comment up to the end of the line
+  .comment "text"                 comment block stored in the binary
+  .data 0x0100                    code/data segment loaded at the given address
+  .include "other.asm"            include a file (relative to the including file)
+  label:                          label, may be followed by a statement
+  db 1, 0xAB, 0b101, "text"       bytes and strings (not zero terminated)
+  dw 0x1234, label                16 bit words
+  ds "text"                       zero terminated string
+  fim R0 lo(table)                lo()/hi() give the low/high byte of a value
+  jun loop+3                      one label plus/minus constants
+  wmp 5  /  rdr P7                ports as number or Pn
+  Mnemonics, registers and ports are case insensitive, labels are not.
+  A label called "main" is required, it is the program start address.
+
+Output format (little endian, see the RCX8 loader)
+  0x7000 pc | 0x1000 len bytes (comment) | 0x2000 offset len bytes (data) | 0x0000
+
+Tests: tests/run_tests.sh path/to/rcx8asm
