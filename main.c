@@ -109,57 +109,74 @@ int finalize_segment(struct segment * seg, struct program * prg){
 	return 0;
 }
 
+//Binary format (all values little endian, see RCX8 loader):
+//  0x7000 <pc>                           program start address
+//  0x1000 <len> <bytes>                  comment block
+//  0x2000 <offset> <len> <bytes>         data block
+//  0x0000                                end of file
+static void write_u16(uint16_t v, FILE * of){
+	fputc(v & 0xFF, of);
+	fputc(v >> 8, of);
+}
+
 int write_data_segment(struct program prg, struct segment * current_segment, FILE * of){
-	if(current_segment != 0){
-		struct list_head * pos = 0;
-		struct statement * stmt = 0;
-		int size = 0;
-		const int zero = 0;
+	struct list_head * pos = 0;
+	struct statement * stmt = 0;
+	uint32_t size = 0;
 
-		list_for_each(pos, &current_segment->statements.list){
-			stmt = list_entry(pos,struct statement,list);
+	if(current_segment == 0){
+		return 0;
+	}
 
-			if(stmt->type == st_def_str){
-				fwrite(stmt->str,sizeof(char),stmt->size,of);
-				size +=stmt->size;
+	list_for_each(pos, &current_segment->statements.list){
+		size += list_entry(pos,struct statement,list)->size;
+	}
+	if(size > 0xFFFF){
+		print_error("Error: data segment at 0x%x is too large (%u bytes)\n", current_segment->base_address, size);
+		return -1;
+	}
+
+	write_u16(0x2000, of);
+	write_u16(current_segment->base_address, of);
+	write_u16(size, of);
+
+	list_for_each(pos, &current_segment->statements.list){
+		stmt = list_entry(pos,struct statement,list);
+
+		switch(stmt->type){
+		case st_def_str:
+			fwrite(stmt->str,sizeof(char),stmt->size,of);
+			break;
+		case st_def_b:
+			fputc(stmt->num & 0xFF, of);
+			break;
+		case st_def_w:
+			write_u16(stmt->num, of);
+			break;
+		case st_inst: {
+			struct OP inst = prg.opcodes[stmt->inst.id];
+			uint8_t bin = inst.op;
+
+			if(inst.arg_types[0] == arg_reg){
+				bin |= (stmt->inst.p1 & 0x7) << 1;
 			}else
-			if(stmt->type == st_def_b){
-				fwrite(&stmt->num,sizeof(char),1,of);
-				size += 1;
-			}else
-			if(stmt->type == st_def_w){
-				fwrite(&stmt->num,sizeof(uint16_t),1,of);
-				size += 2;
-			}else
-			if(stmt->type == st_inst){
-				struct OP inst = prg.opcodes[stmt->inst.id];
-				uint8_t bin = 0;
-				bin = inst.op;
-
-				if(inst.arg_types[0] == arg_reg || inst.arg_types[0] == arg_dirct4){
-					bin = bin | ((stmt->inst.p1 & 0xF) << 1);
-				}
-				fwrite(&bin,sizeof(bin),1,of);
-				size += sizeof(bin);
-
-				if(inst.arg_types[0] == arg_addr || inst.arg_types[1] == arg_addr){
-					if(stmt->inst.address != 0 && stmt->inst.address->valid){
-						fwrite(&stmt->inst.address->address,sizeof(uint16_t),1,of);
-						size += 2;
-					}else{
-						print_error("Error: %s","Label undefined\n");
-						return -1;
-					}
-				}else
-				if(inst.arg_types[1] == arg_dirct || inst.arg_types[1] == arg_port){
-					fwrite(&stmt->inst.p2,sizeof(uint8_t),1,of);
-					size += 1;
-				}
+			if(inst.arg_types[0] == arg_dirct4){
+				bin |= stmt->inst.p1 & 0xF;
 			}
-		}
+			fputc(bin, of);
 
-		if(size % 2 != 0){
-			fwrite(&zero, sizeof(uint8_t), 1, of);
+			if(inst.arg_types[0] == arg_addr || inst.arg_types[1] == arg_addr){
+				if(stmt->inst.address == 0 || !stmt->inst.address->valid){
+					print_error("Error: %s","Label undefined\n");
+					return -1;
+				}
+				write_u16(stmt->inst.address->address, of);
+			}else
+			if(inst.arg_types[1] == arg_dirct || inst.arg_types[0] == arg_port){
+				fputc(stmt->inst.p2 & 0xFF, of);
+			}
+			break;
+		}
 		}
 	}
 
@@ -167,10 +184,9 @@ int write_data_segment(struct program prg, struct segment * current_segment, FIL
 }
 
 int write_start_address(struct program prg, FILE * of){
-	uint16_t start_addr = 0x7000;
-	fwrite(&start_addr, sizeof(uint16_t),1,of);
-	fwrite(&prg.main_label->address,sizeof(uint16_t),1,of);
-	
+	write_u16(0x7000, of);
+	write_u16(prg.main_label->address, of);
+
 	return 0;
 }
 
@@ -191,7 +207,6 @@ void print_segments(struct list_head * list){
 int write_segments(struct program prg, struct list_head * list, FILE * of){
 	struct list_head * pos;
 	struct segment * seg_iter;
-	const int zero = 0;
 	int error = 0;
 
 	list_for_each(pos, list){
@@ -200,10 +215,9 @@ int write_segments(struct program prg, struct list_head * list, FILE * of){
 
 		switch(seg_iter->type){
 			case seg_comment:
-				fwrite(seg_iter->string,sizeof(char), seg_iter->length, of);
-				if(seg_iter->length % 2 != 0){
-					fwrite(&zero,sizeof(char), 1, of);
-				}
+				write_u16(0x1000, of);
+				write_u16(seg_iter->length + 1, of); //including the terminating zero
+				fwrite(seg_iter->string,sizeof(char), seg_iter->length + 1, of);
 				break;
 			case seg_data:
 				error = write_data_segment(prg, seg_iter, of);
@@ -316,12 +330,14 @@ int main(int argc, char *argv[])
 	error = write_segments(prg, &prg.segment_list.list, output_file);
 
 	//3. write eof block
-	uint16_t eofblock = 0x0;
-	fwrite(&eofblock, sizeof(uint16_t), 1, output_file);
+	write_u16(0x0000, output_file);
 
-out:
 	fclose(input_file);
 	fclose(output_file);
-	
+	if(error != 0){
+		print_error("Writing output failed: %d\n", error);
+		remove(output_name);
+	}
+
 	return error != 0;
 }

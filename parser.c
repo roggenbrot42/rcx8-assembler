@@ -181,7 +181,7 @@ struct statement * parse_definition(struct parser_context * context, FILE * f){
 			if(i == 0 && cur_tok(context) == tok_str){
 				st->type = st_def_str;
 				st->str = context->comment_str;
-				st->size = strlen(st->str);
+				st->size = strlen(st->str) + 1; //zero terminated
 				fprintf(stderr,"%s\r\n",st->str);
 				break;
 			}else if(i == 1 && cur_tok(context) == tok_num){
@@ -257,21 +257,39 @@ struct statement * parse_instruction(struct parser_context * context, struct OP 
 			}else
 			if(opcode->arg_types[i] == arg_reg && cur_tok(context) == tok_ident){
 				fprintf(stderr, "%s ", context->identifier_str);
-				sscanf(strupr(context->identifier_str), "R%hu", &st->inst.p1);
+				if(sscanf(strupr(context->identifier_str), "R%hu", &st->inst.p1) != 1 || st->inst.p1 > 7){
+					print_error("Syntax error (line %d): invalid register %s (R0-R7)\r\n",cur_line(context),context->identifier_str);
+					free(st);
+					return 0;
+				}
 			}else
 			if(opcode->arg_types[i] == arg_dirct4 && cur_tok(context) == tok_num){
 				fprintf(stderr, "%d ", context->num_value);
+				if(context->num_value > 0xF){
+					print_error("Syntax error (line %d): value %d does not fit in 4 bits\r\n",cur_line(context),context->num_value);
+					free(st);
+					return 0;
+				}
 				st->inst.p1 = context->num_value;
 			}else 
 			if(opcode->arg_types[i] == arg_dirct &&	cur_tok(context) == tok_num){
 				fprintf(stderr,"%d ", context->num_value);
+				if(context->num_value > 0xFF){
+					print_error("Syntax error (line %d): value %d does not fit in 8 bits\r\n",cur_line(context),context->num_value);
+					free(st);
+					return 0;
+				}
 				st->inst.p2 = context->num_value;
 				st->size += 1;
 			}else
 			if(opcode->arg_types[i] == arg_port && cur_tok(context) == tok_ident)
 			{
 				fprintf(stderr,"%s ",context->identifier_str);
-				sscanf(strupr(context->identifier_str), "P%hu",&st->inst.p2);
+				if(sscanf(strupr(context->identifier_str), "P%hu",&st->inst.p2) != 1 || st->inst.p2 > 255){
+					print_error("Syntax error (line %d): invalid port %s (P0-P255)\r\n",cur_line(context),context->identifier_str);
+					free(st);
+					return 0;
+				}
 				st->size += 1;
 			}else
 			if((opcode->arg_types[i] == arg_addr) &&

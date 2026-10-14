@@ -33,13 +33,14 @@ dw 65345
 .data 0x0200
 main:
     nop
-    fim R0 0x05 #fill R0 and R1 with upper (^) and lower (?) bytes of hello address
+    fim R0 0x00 #R1.R0 = address of hello (R1 = MSB)
     fim R1 0x01
 print:
     fin R3
     ld R3
     jz end
     asc
+    inc R0
     jun print
 end:
     hlt

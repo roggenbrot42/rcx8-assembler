@@ -9,9 +9,10 @@ void init_opcodes(struct OP * opcodes){
 	for(i=1;i<MNEM_MAX;i++){
 		opcodes[i].opid = i;
 	}
-	//jnc
-	for(i=1;i<FIM;i++){
-		opcodes[i].op = 0x10;
+	//JCN: 0001 C1C2C3C4 (C1 = invert, C2 = ACC zero, C3 = carry, C4 = test)
+	static const uint8_t jcn_ops[] = {0x14, 0x1C, 0x12, 0x1A, 0x11, 0x19}; //jz jnz jc jnc jt jnt
+	for(i=JZ;i<FIM;i++){
+		opcodes[i].op = jcn_ops[i - JZ];
 		opcodes[i].arg_types[0] = arg_addr;
 	}
 
@@ -96,7 +97,7 @@ void init_opcodes(struct OP * opcodes){
 	opcodes[i++].arg_types[0] = arg_port;
 
 	//rdr
-	opcodes[i].op = 0xE2;
+	opcodes[i].op = 0xEA;
 	opcodes[i++].arg_types[0] = arg_port;
 
 	//kbi
@@ -115,4 +116,7 @@ void init_opcodes(struct OP * opcodes){
 
 	//daa
 	opcodes[i++].op = 0xFB;
+
+	//hlt
+	opcodes[i++].op = 0xFF;
 }
